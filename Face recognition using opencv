@@ -1,65 +1,93 @@
 # importpackages
-import numpy as np
-import argparse
 import cv2
+import numpy as np
+import os
  
-# construct the argument parse and parse the arguments
-ap = argparse.ArgumentParser()
-ap.add_argument("-i", "--image", required=True,
-	help="path to input image")
-ap.add_argument("-p", "--prototxt", required=True,
-	help="path to Caffe 'deploy' prototxt file")
-ap.add_argument("-m", "--model", required=True,
-	help="path to Caffe pre-trained model")
-ap.add_argument("-c", "--confidence", type=float, default=0.5,
-	help="minimum probability to filter weak detections")
-args = vars(ap.parse_args())
+#Collecting dataset
+def dataset():
+    images = []
+    labels = []
+    labels_dic = {}
+    people = [person for person in os.listdir("people/")]
+    for i, person in enumerate(people):
+            labels_dic[i] = person
+            for image in os.listdir("people/" + person):
+                    images.append(cv2.imread("people/" + person + '/' + image, 0))
+                    labels.append(person)
+       
+    return (images, np.array(labels), labels_dic)
 
-# load our serialized model from disk
-print("Model loading")
-net = cv2.dnn.readNetFromCaffe(args["prototxt"], args["model"])
+images, labels, labels_dic = collect_dataset()
  
-# load the input image and construct an input blob for the image
-# by resizing to a fixed 300x300 pixels and then normalizing it
-image = cv2.imread(args["image"])
-(h, w) = image.shape[:2]
-blob = cv2.dnn.blobFromImage(cv2.resize(image, (300, 300)), 1.0,(300, 300), (104.0, 177.0, 123.0))
+ class FaceDetector(object):
+    def __init__(self, xml_path):
+        self.classifier = cv2.CascadeClassifier(xml_path)
+    
+    def detect(self, image, biggest_only=True):
+        scale_factor = 1.2
+        min_neighbors = 5
+        min_size = (30, 30)
+        biggest_only = True
+        faces_coord = self.classifier.detectMultiScale(image,
+                                                       scaleFactor=scale_factor,
+                                                       minNeighbors=min_neighbors,
+                                                       minSize=min_size,
+                                                       flags=cv2.CASCADE_SCALE_IMAGE)
+        return faces_coord
 
-# pass the blob through the network and obtain the detections and
-# predictions
-print("[INFO] computing object detections...")
-net.setInput(blob)
-detections = net.forward()
+def cut_faces(image, faces_coord):
+    faces = []
+    
+    for (x, y, w, h) in faces_coord:
+        w_rm = int(0.3 * w / 2)
+        faces.append(image[y: y + h, x + w_rm: x + w - w_rm])
+         
+    return faces
 
-# loop over the detections
-for i in range(0, detections.shape[2]):
-	# extract the confidence (i.e., probability) associated with the
-	# prediction
-	confidence = detections[0, 0, i, 2]
- 
-	# filter out weak detections by ensuring the `confidence` is
-	# greater than the minimum confidence
-	if confidence > args["confidence"]:
-		# compute the (x, y)-coordinates of the bounding box for the
-		# object
-		box = detections[0, 0, i, 3:7] * np.array([w, h, w, h])
-		(startX, startY, endX, endY) = box.astype("int")
- 
-		# draw the bounding box of the face along with the associated
-		# probability
-		text = "{:.2f}%".format(confidence * 100)
-		y = startY - 10 if startY - 10 > 10 else startY + 10
-		cv2.rectangle(image, (startX, startY), (endX, endY),
-			(0, 0, 255), 2)
-		cv2.putText(image, text, (startX, y),
-			cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 255), 2)
- 
+def resize(images, size=(224, 224)):
+    images_norm = []
+    for image in images:
+        if image.shape < size:
+            image_norm = cv2.resize(image, size, 
+                                    interpolation=cv2.INTER_AREA)
+        else:
+            image_norm = cv2.resize(image, size, 
+                                    interpolation=cv2.INTER_CUBIC)
+        images_norm.append(image_norm)
+
+    return images_norm
+
+
+
+def normalize_faces(image, faces_coord):
+
+    faces = cut_faces(image, faces_coord)
+    faces = resize(faces)
+    
+    return faces
+  
+for image in images:
+    detector = FaceDetector("haarcascade_frontalface_default.xml")
+    faces_coord = detector.detect(image, True)
+    faces = normalize_faces(image ,faces_coord)
+    for i, face in enumerate(faces):
+            cv2.imwrite('%s.jpeg' % (count), faces[i])
+            count += 1  
+	    
 # show the output image
 cv2.imshow("Output", image)
 cv2.waitKey(0)
 
 
 #open terminal to run the model
-#$ python detect_faces.py --image rooster.jpg --prototxt deploy.prototxt.txt \
-	--model res10_300x300_ssd_iter_140000.caffemodel
+python retrain.py \
+  --bottleneck_dir=tf_files/bottlenecks \
+  --how_many_training_steps=500 \
+  --model_dir=tf_files/models/ \
+  --summaries_dir=tf_files/training_summaries/mobilenet_0.50_224 \
+  --output_graph=tf_files/retrained_graph.pb \
+  --output_labels=tf_files/retrained_labels.txt \
+  --architecture=mobilenet_0.50_224 \
+  --image_dir=tf_files/people
+#$tensorboard --logdir tf_files/training_summaries &
 
